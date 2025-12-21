@@ -38,7 +38,12 @@ async function ensureDataDir() {
 app.get('/api/study-data', async (req, res) => {
   try {
     const data = await fs.readFile(DATA_FILE, 'utf-8');
-    res.json(JSON.parse(data));
+    try {
+      res.json(JSON.parse(data));
+    } catch (parseError) {
+      console.error('Error parsing study data:', parseError);
+      res.json(EMPTY_STATE);
+    }
   } catch (error) {
     // If file doesn't exist, return empty state
     if (error.code === 'ENOENT') {
@@ -53,6 +58,12 @@ app.get('/api/study-data', async (req, res) => {
 // POST /api/study-data - Save study data
 app.post('/api/study-data', async (req, res) => {
   try {
+    // Basic validation
+    const { processedVideos, activeExam, quizHistory } = req.body;
+    if (!Array.isArray(processedVideos) || !activeExam || !Array.isArray(quizHistory)) {
+      return res.status(400).json({ error: 'Invalid data format' });
+    }
+    
     await ensureDataDir();
     const data = JSON.stringify(req.body, null, 2);
     await fs.writeFile(DATA_FILE, data, 'utf-8');
