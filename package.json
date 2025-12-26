@@ -1,7 +1,7 @@
 {
   "name": "comptia-study-backend",
-  "version": "1.0.0",
-  "description": "Backend API for CompTIA Study Buddy",
+  "version": "2.0.0",
+  "description": "Backend API for CompTIA Study Buddy with MongoDB",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "mongodb": "^6.3.0"
   },
   "engines": {
     "node": ">=18.0.0"
