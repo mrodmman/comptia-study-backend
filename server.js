@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs/promises');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 
@@ -9,22 +8,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// Request logging middleware
-app.use((req, res, next) => {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`${req.method} ${req.path} - ${new Date().toISOString()}`);
-  if (req.method === 'POST' && req.body) {
-    console.log('Body keys:', Object.keys(req.body));
-  }
-  console.log('='.repeat(60));
-  next();
-});
+// MongoDB connection
+let db;
+let studyDataCollection;
 
-// Constants
-const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'study-data.json');
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const DB_NAME = 'comptia-study-buddy';
+const COLLECTION_NAME = 'study-data';
 
-// Empty state for NEW format (StudyGuide structure)
+// Empty state for NEW format
 const EMPTY_STATE = {
   activeGuide: {
     id: `guide-${Date.now()}`,
@@ -37,42 +29,73 @@ const EMPTY_STATE = {
   activeExam: "A+"
 };
 
-// Helper function to ensure data directory exists
-async function ensureDataDir() {
+// Connect to MongoDB
+async function connectToDatabase() {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI environment variable is not set');
+    }
+
+    console.log('🔄 Connecting to MongoDB...');
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    
+    db = client.db(DB_NAME);
+    studyDataCollection = db.collection(COLLECTION_NAME);
+    
+    console.log('✅ Connected to MongoDB successfully!');
+    console.log(`   Database: ${DB_NAME}`);
+    console.log(`   Collection: ${COLLECTION_NAME}`);
   } catch (error) {
-    console.error('Error creating data directory:', error);
+    console.error('❌ MongoDB connection error:', error.message);
     throw error;
   }
 }
 
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`${req.method} ${req.path} - ${new Date().toISOString()}`);
+  if (req.method === 'POST' && req.body) {
+    console.log('Body keys:', Object.keys(req.body));
+  }
+  console.log('='.repeat(60));
+  next();
+});
+
 // GET /api/study-data - Retrieve study data
 app.get('/api/study-data', async (req, res) => {
   try {
-    const data = await fs.readFile(DATA_FILE, 'utf-8');
-    try {
-      const parsedData = JSON.parse(data);
-      console.log('✅ Returning saved data');
-      res.json(parsedData);
-    } catch (parseError) {
-      console.error('❌ Error parsing data, returning empty state');
-      res.json(EMPTY_STATE);
+    if (!studyDataCollection) {
+      return res.status(503).json({ error: 'Database not connected' });
     }
+
+    // Get the user's study data (we'll use a single document with id: 'main')
+    const data = await studyDataCollection.findOne({ _id: 'main' });
+
+    if (!data) {
+      console.log('📝 No data found, returning empty state');
+      return res.json(EMPTY_STATE);
+    }
+
+    // Remove MongoDB's _id field before sending
+    const { _id, ...studyData } = data;
+    
+    console.log('✅ Returning saved data from MongoDB');
+    res.json(studyData);
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.log('📝 No data file found, returning empty state');
-      res.json(EMPTY_STATE);
-    } else {
-      console.error('❌ Error reading data:', error);
-      res.status(500).json({ error: 'Failed to read study data' });
-    }
+    console.error('❌ Error reading data:', error);
+    res.status(500).json({ error: 'Failed to read study data' });
   }
 });
 
 // POST /api/study-data - Save study data
 app.post('/api/study-data', async (req, res) => {
   try {
+    if (!studyDataCollection) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
+
     const data = req.body;
     
     if (!data || typeof data !== 'object') {
@@ -109,11 +132,14 @@ app.post('/api/study-data', async (req, res) => {
       data.activeExam = "A+";
     }
     
-    await ensureDataDir();
-    const jsonData = JSON.stringify(data, null, 2);
-    await fs.writeFile(DATA_FILE, jsonData, 'utf-8');
+    // Save to MongoDB (upsert = update or insert)
+    await studyDataCollection.updateOne(
+      { _id: 'main' },
+      { $set: data },
+      { upsert: true }
+    );
     
-    console.log('✅ DATA SAVED');
+    console.log('✅ DATA SAVED TO MONGODB');
     console.log(`   Guide: ${data.activeGuide.name}`);
     console.log(`   Videos: ${data.activeGuide.processedVideos.length}`);
     console.log(`   Archived: ${data.archivedGuides.length}`);
@@ -128,33 +154,45 @@ app.post('/api/study-data', async (req, res) => {
 // DELETE /api/study-data - Wipe all data
 app.delete('/api/study-data', async (req, res) => {
   try {
-    await fs.unlink(DATA_FILE);
-    console.log('✅ Data wiped successfully');
+    if (!studyDataCollection) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
+
+    await studyDataCollection.deleteOne({ _id: 'main' });
+    console.log('✅ Data wiped from MongoDB');
     res.json({ message: 'Data wiped successfully' });
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.log('✓ Data already wiped');
-      res.json({ message: 'Data wiped successfully' });
-    } else {
-      console.error('❌ Error deleting data:', error);
-      res.status(500).json({ error: 'Failed to delete study data' });
-    }
+    console.error('❌ Error deleting data:', error);
+    res.status(500).json({ error: 'Failed to delete study data' });
   }
 });
 
 // GET /health - Health check
 app.get('/health', (req, res) => {
+  const isDbConnected = !!studyDataCollection;
   res.json({ 
     message: 'Backend is running',
+    database: isDbConnected ? 'Connected' : 'Disconnected',
     format: 'NEW (StudyGuide)',
+    storage: 'MongoDB Atlas',
     timestamp: new Date().toISOString()
   });
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log('\n' + '='.repeat(60));
-  console.log(`🚀 CompTIA Study Backend - Port ${PORT}`);
-  console.log('📊 Format: NEW (activeGuide structure)');
-  console.log('='.repeat(60) + '\n');
-});
+
+connectToDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log('\n' + '='.repeat(60));
+      console.log(`🚀 CompTIA Study Backend - Port ${PORT}`);
+      console.log('📊 Format: NEW (activeGuide structure)');
+      console.log('💾 Storage: MongoDB Atlas');
+      console.log('='.repeat(60) + '\n');
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  });
